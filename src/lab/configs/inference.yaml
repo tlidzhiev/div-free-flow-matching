@@ -1,0 +1,20 @@
+hydra:
+  run:
+    dir: data/saved/${inferencer.save_path}
+
+defaults:
+  - _self_
+  - dataset: mnist_test
+  - dataloader: default
+  - model: baseline
+  - metrics: default
+
+inferencer:
+  device_tensors: ["img", "label"]
+  device: auto # "auto" or a jax platform ("cpu", "gpu", "tpu")
+  use_bfloat16: false
+  jit: true # false to run the steps without jax.jit (for debugging)
+  seed: 42
+  from_pretrained: null # checkpoint directory of a step (e.g. .../checkpoints/1000)
+  use_ema: true # load EMA weights from the checkpoint instead of the raw ones
+  save_path: "default" # predictions saved to data/saved/{save_path}/{partition}/

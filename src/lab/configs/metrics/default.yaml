@@ -1,0 +1,9 @@
+# Instantiated into {name: metric class}; the name is the key in the logs (e.g. test_accuracy)
+train:
+  accuracy:
+    _target_: lab.metrics.accuracy.AccuracyMetric.configure
+    num_classes: ${model.num_classes}
+inference:
+  accuracy:
+    _target_: lab.metrics.accuracy.AccuracyMetric.configure
+    num_classes: ${model.num_classes}

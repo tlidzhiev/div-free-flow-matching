@@ -1,0 +1,59 @@
+[project]
+name = "research-project-template"
+version = "0.1.0"
+description = "Template for my research projects"
+readme = "README.md"
+authors = [
+    { name = "tlidzhiev", email = "trlidzhiev@gmail.com" }
+]
+requires-python = "==3.13.18"
+dependencies = [
+    "clu==0.0.12",
+    "comet-ml==3.58.10",
+    "flax==0.12.12",
+    "grain==0.2.18",
+    "hydra-core==1.3.8",
+    "jax==0.12.0.1",
+    "matplotlib==3.11.2",
+    "numpy==2.5.4",
+    "optax==0.2.8",
+    "orbax-checkpoint==0.12.9",
+    "soap-jax==0.2.2",
+    "tqdm==4.70.1",
+]
+
+[dependency-groups]
+dev = [
+    "ipykernel==7.4.0",
+    "ipywidgets==8.1.9",
+    "jupyter==1.1.1",
+    "pre-commit==4.7.0",
+    "ruff==0.17.5",
+    "ty==0.0.105",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.6,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "lab"
+
+[tool.uv.sources]
+soap-jax = { git = "https://github.com/haydn-jones/SOAP_JAX" }
+
+[project.scripts]
+train = "lab.train:main"
+inference = "lab.inference:main"
+
+[tool.ruff.format]
+quote-style = "single"
+
+[tool.ruff]
+line-length = 100
+
+[[tool.ty.overrides]]
+include = ["src/lab/loss/**", "src/lab/metrics/**"]
+
+[tool.ty.overrides.rules]
+incompatible-method-override = "ignore"

@@ -1,0 +1,53 @@
+hydra:
+  run:
+    dir: ${writer.log_dir}
+
+defaults:
+  - _self_
+  - dataset: mnist
+  - dataloader: default
+  - model: baseline
+  - criterion: ce
+  - metrics: default
+  - optimizer: default
+  - lr_scheduler: cosine
+  - writer: cometml
+
+trainer:
+  # Steps
+  total_steps: 10000 # total optimizer steps
+  eval_every_steps: 1000 # validation frequency
+  checkpoint_every_steps: 1000 # periodic checkpoint frequency
+  grad_accum_steps: 1 # batches per optimizer step (effective batch size = batch_size * grad_accum_steps)
+
+  # Logging
+  log_step: 100 # optimizer steps between train logs
+  log_images: 16 # images in the logged grid of predictions (0 = no images)
+  debug: false # true to measure data_time / step_time (waits for the device at each step)
+
+  # Checkpoints
+  checkpoint_dir: ${writer.log_dir}/checkpoints
+  # Saved: at every evaluation, every checkpoint_every_steps (unless only_best) and at the last
+  # step. Kept: the periodic ones, the best one and the latest one (to resume from); the others
+  # are deleted right after the save. The monitor can use the eval metrics ('<part>_<name>') and the train ones ('train_<name>').
+  resume_from: null # null, the step of a checkpoint in checkpoint_dir (e.g. 1000) or "latest"
+  from_pretrained: null # null or checkpoint directory of a step (e.g. .../checkpoints/1000) to take the weights from
+  from_pretrained_ema: false # take the EMA weights of from_pretrained instead of the raw ones
+  only_best: false # true to skip the periodic checkpoints (requires monitor)
+  monitor: "off" # "off" or "<min|max> <metric_name>", e.g. "max test_accuracy"
+  early_stop: null # evaluations without improvement before stopping (requires monitor)
+
+  # Hardware and numerics
+  device: auto # "auto" or a jax platform ("cpu", "gpu", "tpu")
+  device_tensors: ["img", "label"] # batch entries passed to the jitted steps
+  use_bfloat16: false
+  jit: true # false to run the steps without jax.jit (for debugging)
+  max_grad_norm: null # null = no gradient clipping
+
+  # Run
+  seed: 42
+  override: false # overwrite an existing run dir with the same writer.run_name
+  ema: # null to disable
+    decay: 0.999
+    update_every: 1 # optimizer steps between EMA updates
+    warmup_steps: 0 # steps with linearly increasing decay (0 = disabled)
