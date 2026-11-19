@@ -50,7 +50,8 @@ class BaseRunner:
         self.metrics = metrics
         self.device_tensors = device_tensors
         if use_bfloat16:
-            model = model.clone(dtype=jnp.bfloat16)
+            # Also for the submodules passed as attributes (the denoiser)
+            model = model.with_dtype(jnp.bfloat16)
         self.model = model
         self.amp_dtype = jnp.bfloat16 if use_bfloat16 else None
         if self.amp_dtype is not None:

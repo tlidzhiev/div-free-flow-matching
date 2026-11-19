@@ -4,25 +4,28 @@ hydra:
 
 defaults:
   - _self_
-  - dataset: mnist
+  - dataset: kolmogorov
   - dataloader: default
-  - model: baseline
-  - criterion: ce
-  - metrics: default
+  - model: fm_unet
+  - criterion: fm
+  - path: fm
+  - metrics: none
+  - transforms: kolmogorov
   - optimizer: default
-  - lr_scheduler: cosine
+  - lr_scheduler: default
   - writer: cometml
 
 trainer:
   # Steps
-  total_steps: 10000 # total optimizer steps
-  eval_every_steps: 1000 # validation frequency
-  checkpoint_every_steps: 1000 # periodic checkpoint frequency
+  total_steps: 40000 # total optimizer steps (40000 * 256 = ~1250 epochs of the 8192 train fields)
+  eval_every_steps: 2000 # validation frequency (a checkpoint to resume from is also saved)
+  checkpoint_every_steps: 10000 # periodic checkpoints kept
   grad_accum_steps: 1 # batches per optimizer step (effective batch size = batch_size * grad_accum_steps)
 
   # Logging
   log_step: 100 # optimizer steps between train logs
-  log_images: 16 # images in the logged grid of predictions (0 = no images)
+  log_images: 16 # generated fields in the logged grid of vorticities (0 = no images)
+  sample_steps: 32 # Euler ODE steps to generate the logged fields
   debug: false # true to measure data_time / step_time (waits for the device at each step)
 
   # Checkpoints
@@ -34,18 +37,25 @@ trainer:
   from_pretrained: null # null or checkpoint directory of a step (e.g. .../checkpoints/1000) to take the weights from
   from_pretrained_ema: false # take the EMA weights of from_pretrained instead of the raw ones
   only_best: false # true to skip the periodic checkpoints (requires monitor)
-  monitor: "off" # "off" or "<min|max> <metric_name>", e.g. "max test_accuracy"
+  monitor: "min val_fm" # "off" or "<min|max> <metric_name>"; keeps the best checkpoint
   early_stop: null # evaluations without improvement before stopping (requires monitor)
 
   # Hardware and numerics
   device: auto # "auto" or a jax platform ("cpu", "gpu", "tpu")
-  device_tensors: ["img", "label"] # batch entries passed to the jitted steps
-  use_bfloat16: false
+  device_tensors: ["x", "cond"] # batch entries passed to the jitted steps
+  use_bfloat16: true # bfloat16 compute in the train steps
+  # Precision of the float32 matmuls/convs: "default", "high" (3 bf16 passes) or "highest" (full
+  # float32). On TPU "default" is one bf16 pass, on recent GPUs TF32; no effect on bf16 compute
+  matmul_precision: default
+  # The evaluation and the logged samples: float32 for honest divergence metrics
+  eval_use_bfloat16: false
+  eval_matmul_precision: highest
   jit: true # false to run the steps without jax.jit (for debugging)
-  max_grad_norm: null # null = no gradient clipping
+  max_grad_norm: 1.0 # null = no gradient clipping
 
   # Run
-  seed: 42
+  seed: 42 # init, training randomness and train data order
+  eval_seed: 0 # noise and times of the evaluation and the logged samples (the same for all runs)
   override: false # overwrite an existing run dir with the same writer.run_name
   ema: # null to disable
     decay: 0.999

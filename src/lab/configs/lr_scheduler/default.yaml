@@ -1,3 +1,6 @@
-# Instantiated into an optax schedule, which is the learning rate of the optimizer
-_target_: optax.constant_schedule
-value: 1.0e-3
+_target_: optax.warmup_cosine_decay_schedule
+init_value: 0.0 # lr at step 0 of the warmup
+peak_value: 2.0e-4
+warmup_steps: 1000 # 0 = no warmup
+decay_steps: ${trainer.total_steps} # includes the warmup
+end_value: 0.0

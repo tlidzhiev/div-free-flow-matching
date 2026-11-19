@@ -1,0 +1,11 @@
+train:
+  _target_: lab.dataset.kolmogorov.KolmogorovDataset
+  root: data/kolmogorov # relative to the project root (or absolute)
+  split: train
+  normalize: true # divide the velocities by u_scale of meta.json (the train RMS velocity)
+
+val:
+  _target_: lab.dataset.kolmogorov.KolmogorovDataset
+  root: data/kolmogorov
+  split: val
+  normalize: true # divide the velocities by u_scale of meta.json (the train RMS velocity)

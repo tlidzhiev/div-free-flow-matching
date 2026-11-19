@@ -1,9 +1,0 @@
-train:
-  _target_: lab.dataset.mnist.MNISTDataset
-  split: train
-  shuffle_index: true
-
-test:
-  _target_: lab.dataset.mnist.MNISTDataset
-  split: test
-  shuffle_index: false

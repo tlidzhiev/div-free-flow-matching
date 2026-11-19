@@ -4,17 +4,21 @@ hydra:
 
 defaults:
   - _self_
-  - dataset: mnist_test
+  - dataset: kolmogorov_test
   - dataloader: default
-  - model: baseline
-  - metrics: default
+  - model: fm_unet
+  - metrics: none
 
 inferencer:
-  device_tensors: ["img", "label"]
+  device_tensors: ["x", "cond"]
   device: auto # "auto" or a jax platform ("cpu", "gpu", "tpu")
-  use_bfloat16: false
+  use_bfloat16: false # float32 for honest divergence metrics (bf16 rounding gives ~1e-2)
+  # Precision of the float32 matmuls/convs: "default", "high" or "highest" (full float32; on
+  # TPU "default" is one bf16 pass, on recent GPUs TF32)
+  matmul_precision: highest
+  sample_steps: 32 # Euler ODE steps to generate a field
   jit: true # false to run the steps without jax.jit (for debugging)
   seed: 42
   from_pretrained: null # checkpoint directory of a step (e.g. .../checkpoints/1000)
   use_ema: true # load EMA weights from the checkpoint instead of the raw ones
-  save_path: "default" # predictions saved to data/saved/{save_path}/{partition}/
+  save_path: "default" # generated fields saved to data/saved/{save_path}/{partition}/

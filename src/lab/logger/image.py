@@ -67,12 +67,13 @@ def make_grid(
     pad_value: int = 0,
 ) -> np.ndarray:
     """
-    Make a grid of images of the same shape.
+    Make a grid of images. Images of different sizes (e.g. with captions of different
+    heights) are centered in cells of the largest size.
 
     Parameters
     ----------
     images : list[np.ndarray]
-        uint8 images of shape (H, W, C).
+        uint8 images of shape (H_i, W_i, C).
     nrow : int, optional
         Number of images in a row of the grid.
     padding : int, optional
@@ -87,7 +88,9 @@ def make_grid(
     """
     num_cols = min(nrow, len(images))
     num_rows = -(-len(images) // num_cols)
-    height, width, channels = images[0].shape
+    height = max(image.shape[0] for image in images)
+    width = max(image.shape[1] for image in images)
+    channels = images[0].shape[2]
     grid = np.full(
         (
             num_rows * (height + padding) + padding,
@@ -98,7 +101,8 @@ def make_grid(
         dtype=np.uint8,
     )
     for i, image in enumerate(images):
-        y = padding + (i // num_cols) * (height + padding)
-        x = padding + (i % num_cols) * (width + padding)
-        grid[y : y + height, x : x + width] = image
+        h, w = image.shape[:2]
+        y = padding + (i // num_cols) * (height + padding) + (height - h) // 2
+        x = padding + (i % num_cols) * (width + padding) + (width - w) // 2
+        grid[y : y + h, x : x + w] = image
     return grid

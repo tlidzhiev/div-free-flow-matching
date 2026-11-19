@@ -1,0 +1,12 @@
+_target_: lab.model.velocity_field.VelocityField
+hard_div_free: false # Leray-project the predicted velocity (and the noise)
+denoiser:
+  _target_: lab.model.denoiser.UNet
+  in_channels: 2
+  out_channels: 2
+  resolution: 64
+  base_features: 64 # must be a multiple of 32 (GroupNorm)
+  channel_mult: [1, 2, 2, 2] # widths 64, 128, 128, 128 at 64, 32, 16, 8 (~10M params)
+  attn_resolutions: [16, 8]
+  dropout: 0.1
+  remat: true # recompute activations in the backward pass: ~4x less memory, ~20% more compute

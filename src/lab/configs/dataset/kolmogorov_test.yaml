@@ -1,0 +1,5 @@
+test:
+  _target_: lab.dataset.kolmogorov.KolmogorovDataset
+  root: data/kolmogorov
+  split: test
+  normalize: true # divide the velocities by u_scale of meta.json (the train RMS velocity)

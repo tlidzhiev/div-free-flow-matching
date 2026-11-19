@@ -1,5 +1,6 @@
 import grain
 from absl import flags
+from hydra.utils import instantiate
 from omegaconf import DictConfig
 
 
@@ -8,10 +9,11 @@ def build_dataloader(
     dataset: grain.sources.RandomAccessDataSource,
     train: bool,
     batch_size: int | None = None,
+    transform: grain.transforms.RandomMap | None = None,
 ) -> grain.IterDataset:
     """
-    Build the dataloader of one partition (shuffling, batching, threaded reading and
-    optional multiprocess prefetching).
+    Build the dataloader of one partition (shuffling, random transforms, batching, threaded
+    reading and optional multiprocess prefetching).
 
     Parameters
     ----------
@@ -23,6 +25,8 @@ def build_dataloader(
         Repeat the data infinitely (train) or pass it once (eval).
     batch_size : int or None, optional
         Overrides 'config.batch_size'.
+    transform : grain.transforms.RandomMap or None, optional
+        Random transform of the elements (e.g. augmentation), seeded with 'config.seed'.
 
     Returns
     -------
@@ -35,6 +39,11 @@ def build_dataloader(
 
     if train:
         ds = ds.repeat()
+
+    if transform is not None:
+        # After the repeat: the random draws depend on the global index, so every epoch gets
+        # new ones; they are deterministic, so a restored iterator reproduces them
+        ds = ds.random_map(transform, seed=config.get('seed', 0))
 
     # Batching a MapDataset (by index) is much faster than batching the examples of an
     # IterDataset one by one; it is possible only without 'filter' in the pipeline, and a
@@ -68,7 +77,8 @@ def get_dataloaders(
 ) -> dict[str, grain.IterDataset]:
     """
     Create dataloaders for the 'train', 'val' and 'test' partitions that have a config
-    under 'config.dataloader'.
+    under 'config.dataloader', with the random transform of the partition under
+    'config.transforms' (if any).
 
     Parameters
     ----------
@@ -84,6 +94,7 @@ def get_dataloaders(
     dict[str, grain.IterDataset]
         Dataloader of each partition.
     """
+    transforms = config.get('transforms') or {}
     dataloaders = {}
     for partition, dataset in datasets.items():
         if (
@@ -97,5 +108,10 @@ def get_dataloaders(
             dataset,
             train=partition == 'train',
             batch_size=(loader_cfg.batch_size * grad_accum_steps if partition == 'train' else None),
+            transform=(
+                instantiate(transform_cfg)
+                if (transform_cfg := transforms.get(partition)) is not None
+                else None
+            ),
         )
     return dataloaders

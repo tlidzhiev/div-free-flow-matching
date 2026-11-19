@@ -1,3 +1,0 @@
-_target_: lab.model.baseline.BaselineModel
-num_classes: 10
-hidden_dim: 128

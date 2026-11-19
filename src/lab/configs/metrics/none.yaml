@@ -1,0 +1,3 @@
+# Instantiated into {name: metric class}; the name is the key in the logs (e.g. val_<name>)
+train: {}
+inference: {}

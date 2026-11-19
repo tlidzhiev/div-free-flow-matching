@@ -1,0 +1,7 @@
+# Processing of a data batch into a flow matching problem (inside the jitted steps)
+_target_: lab.model.flow.FlowMatchingPath
+t_dist: logit_normal # "uniform" or "logit_normal"
+logit_mean: 0.0
+logit_std: 1.0
+p_uncond: 0.1 # probability to drop the condition (classifier-free guidance)
+hard_div_free: ${model.hard_div_free} # keep the noise consistent with the model

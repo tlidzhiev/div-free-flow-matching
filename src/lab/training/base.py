@@ -6,6 +6,7 @@ from typing import Any, cast
 import clu.metrics as clu_metrics
 import grain
 import jax
+import jax.numpy as jnp
 import optax
 import orbax.checkpoint as ocp
 import yaml
@@ -24,7 +25,15 @@ from lab.utils.io import get_root
 from .config import TrainerConfig
 from .runner import BaseRunner
 from .state import TrainState
-from .steps import Batch, Params, make_eval_step, make_predict_step, make_train_step
+from .steps import (
+    Batch,
+    BatchProcessor,
+    Params,
+    make_eval_step,
+    make_sample_step,
+    make_train_step,
+    with_matmul_precision,
+)
 from .utils import EarlyStopping, StepTimer
 
 logger = logging.getLogger(__name__)
@@ -46,6 +55,7 @@ class BaseTrainer(BaseRunner):
         model: BaseModel,
         variables: dict[str, Any],
         criterion: BaseLoss,
+        batch_processor: BatchProcessor,
         metrics: dict[str, dict[str, type[BaseMetric]]],
         optimizer: optax.GradientTransformation | optax.GradientTransformationExtraArgs,
         lr_scheduler: optax.Schedule,
@@ -59,7 +69,8 @@ class BaseTrainer(BaseRunner):
         device : jax.Device
             Device for arrays and computation.
         key : jax.Array
-            PRNG key for training randomness (e.g. dropout).
+            PRNG key for the randomness of training (noise, times, dropout). Evaluation and
+            sampling use keys from 'trainer.eval_seed'.
         datasets : dict[str, grain.sources.RandomAccessDataSource]
             Dataset of each partition.
         model : BaseModel
@@ -68,6 +79,9 @@ class BaseTrainer(BaseRunner):
             Initialized model variables containing 'params'.
         criterion : BaseLoss
             Loss function.
+        batch_processor : BatchProcessor
+            Processing of a batch (inside the jitted steps) into the inputs of the model and the
+            loss, e.g. the noise and the times of flow matching.
         metrics : dict[str, dict[str, type[BaseMetric]]]
             Metrics for training ('train') and inference ('inference').
         optimizer : optax.GradientTransformation or optax.GradientTransformationExtraArgs
@@ -90,12 +104,17 @@ class BaseTrainer(BaseRunner):
         )
         self.timer = StepTimer(enabled=cfg.debug)
         self.key = key
+        # Evaluation and sampling for the logs use fixed keys from their own seed, independent
+        # of the training seed: the same noise and times at every evaluation of every run, so
+        # the results are comparable across steps and across runs
+        self.eval_key, self.sample_key = jax.random.split(jax.random.PRNGKey(cfg.eval_seed))
 
         if cfg.max_grad_norm is not None:
             optimizer = optax.chain(optax.clip_by_global_norm(cfg.max_grad_norm), optimizer)
             logger.info(f'Gradient clipping enabled with max_grad_norm={cfg.max_grad_norm}')
 
         self.criterion = criterion
+        self.batch_processor = batch_processor
         self.optimizer = optimizer
         self.lr_scheduler = lr_scheduler
 
@@ -107,18 +126,36 @@ class BaseTrainer(BaseRunner):
             self.criterion.loss_names, 'train', include_grad_norm=True
         )
         self.eval_metrics_cls = self.make_metrics_cls(self.criterion.loss_names, 'inference')
-        self.train_step_fn = make_train_step(
-            criterion=self.criterion,
-            metrics_cls=self.train_metrics_cls,
-            grad_accum_steps=cfg.grad_accum_steps,
-            jit=cfg.jit,
+        self.train_step_fn = with_matmul_precision(
+            fn=make_train_step(
+                criterion=self.criterion,
+                batch_processor=self.batch_processor,
+                metrics_cls=self.train_metrics_cls,
+                grad_accum_steps=cfg.grad_accum_steps,
+                jit=cfg.jit,
+            ),
+            precision=cfg.matmul_precision,
         )
-        self.eval_step_fn = make_eval_step(
-            criterion=self.criterion,
-            metrics_cls=self.eval_metrics_cls,
-            jit=cfg.jit,
+        self.eval_model = self.model.with_dtype(jnp.bfloat16 if cfg.eval_use_bfloat16 else None)
+        self.eval_step_fn = with_matmul_precision(
+            fn=make_eval_step(
+                criterion=self.criterion,
+                batch_processor=self.batch_processor,
+                metrics_cls=self.eval_metrics_cls,
+                jit=cfg.jit,
+                apply_fn=self.eval_model.apply,
+            ),
+            precision=cfg.eval_matmul_precision,
         )
-        self.predict_step_fn = make_predict_step(self.model.apply, jit=cfg.jit)
+        self.sample_step_fn = with_matmul_precision(
+            fn=make_sample_step(
+                apply_fn=self.eval_model.apply,
+                steps=cfg.sample_steps,
+                hard_div_free=getattr(self.model, 'hard_div_free', False),
+                jit=cfg.jit,
+            ),
+            precision=cfg.eval_matmul_precision,
+        )
 
         # Define dataloaders: a train batch holds the 'grad_accum_steps' micro-batches of a step
         dataloaders = get_dataloaders(config, datasets, cfg.grad_accum_steps)
@@ -331,7 +368,8 @@ class BaseTrainer(BaseRunner):
         start_time = time.perf_counter()
         for raw_batch in tqdm(dataloader, desc=f'{part.capitalize()} Step {self.global_step}'):
             batch = self.prepare_batch(raw_batch)
-            metrics = self.eval_step_fn(self.state, params, metrics, batch)
+            rng = jax.random.fold_in(self.eval_key, num_batches)
+            metrics = self.eval_step_fn(self.state, params, metrics, batch, rng)
             num_batches += 1
 
         # Accumulated over the whole partition, computed once at the end (waits for the device)
@@ -350,7 +388,7 @@ class BaseTrainer(BaseRunner):
         """
         Log data from a batch to the experiment tracker via 'self.writer.add_*'; the writer
         step is already set to the current step and 'part'. 'params' are the ones the batch
-        was evaluated with ('self.predict_step_fn' gives the model outputs).
+        was evaluated with ('self.sample_step_fn' generates fields with them).
         """
         raise NotImplementedError(f'{type(self).__name__} must implement _log_batch method.')
 

@@ -7,6 +7,8 @@ from omegaconf import DictConfig, OmegaConf
 
 logger = logging.getLogger(__name__)
 
+MATMUL_PRECISIONS = ('default', 'high', 'highest')
+
 
 @dataclass(kw_only=True)
 class EMAConfig:
@@ -41,6 +43,7 @@ class TrainerConfig:
     # Logging
     log_step: int = 50
     log_images: int = 16
+    sample_steps: int = 32  # Euler steps of the ODE sampler for the logged generated fields
     debug: bool = False
 
     # Checkpoints
@@ -56,11 +59,17 @@ class TrainerConfig:
     device: str = 'auto'
     device_tensors: list[str] = field(default_factory=list)
     use_bfloat16: bool = False
+    # Precision of the float32 matmuls and convolutions: 'default', 'high' or 'highest'
+    matmul_precision: str = 'default'
+    # The evaluation and the logged samples (their own dtype and precision)
+    eval_use_bfloat16: bool = False
+    eval_matmul_precision: str = 'highest'
     jit: bool = True
     max_grad_norm: float | None = None
 
     # Run
     seed: int = 42
+    eval_seed: int = 0  # noise and times of the evaluation and the logged samples
     override: bool = False
     ema: EMAConfig | None = None
 
@@ -74,11 +83,28 @@ class TrainerConfig:
                 'trainer.eval_every_steps, '
                 f'got {self.checkpoint_every_steps} and {self.eval_every_steps}.'
             )
+        if self.sample_steps < 1:
+            raise ValueError(f'trainer.sample_steps must be positive, got {self.sample_steps}.')
         if self.log_images < 0:
             raise ValueError(f'trainer.log_images must be >= 0, got {self.log_images}.')
         if self.grad_accum_steps < 1:
             raise ValueError(
                 f'trainer.grad_accum_steps must be positive, got {self.grad_accum_steps}.'
+            )
+        for name in ('matmul_precision', 'eval_matmul_precision'):
+            if getattr(self, name) not in MATMUL_PRECISIONS:
+                raise ValueError(
+                    f'trainer.{name} must be one of {MATMUL_PRECISIONS}, got {getattr(self, name)!r}.'
+                )
+        if self.use_bfloat16 and self.matmul_precision != 'default':
+            logger.warning(
+                f'trainer.matmul_precision={self.matmul_precision!r} has no effect on the '
+                'bfloat16 computations of trainer.use_bfloat16=true.'
+            )
+        if self.eval_use_bfloat16 and self.eval_matmul_precision != 'default':
+            logger.warning(
+                f'trainer.eval_matmul_precision={self.eval_matmul_precision!r} has no effect on '
+                'the bfloat16 computations of trainer.eval_use_bfloat16=true.'
             )
         if self.max_grad_norm is not None and self.max_grad_norm <= 0:
             raise ValueError(f'trainer.max_grad_norm must be positive, got {self.max_grad_norm}.')

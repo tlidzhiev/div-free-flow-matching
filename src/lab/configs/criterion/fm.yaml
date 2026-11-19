@@ -1,0 +1,3 @@
+_target_: lab.loss.fm_loss.FlowMatchingLoss
+div_weight: 0.0 # soft divergence penalty on x1_hat (0 = disabled)
+div_t_power: 2.0 # the penalty of a sample is weighted by t ** div_t_power

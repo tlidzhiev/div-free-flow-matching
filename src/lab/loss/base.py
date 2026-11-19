@@ -9,8 +9,9 @@ class BaseLoss:
     """
     Base class for all loss functions.
 
-    A loss takes a single example (without the batch axis), like the model: the train steps
-    vmap it over the batch and average the losses over the valid examples ('mask').
+    A loss takes a batch: the model outputs and the processed batch (see 'batch_processor'
+    of the trainer), and returns the scalar losses of the batch. It only computes the losses:
+    the randomness of the problem (e.g. noise, times) is sampled by the batch processor.
 
     Attributes
     ----------

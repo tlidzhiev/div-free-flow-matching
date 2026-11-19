@@ -1,4 +1,5 @@
-from typing import Any
+import dataclasses
+from typing import Any, Self
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +23,28 @@ class BaseModel(nn.Module, kw_only=True):
 
     dtype: DTypeLike | None = None  # compute dtype (AMP)
     param_dtype: DTypeLike = jnp.float32  # parameter dtype
+
+    def with_dtype(self, dtype: DTypeLike | None) -> Self:
+        """
+        Clone the model with the compute 'dtype', also for the submodules passed as attributes
+        (e.g. a denoiser wrapped by another model).
+        """
+        updates: dict[str, Any] = {'dtype': dtype}
+        for field in dataclasses.fields(self):  # ty:ignore[invalid-argument-type]
+            if field.name in ('parent', 'name'):
+                continue
+            value = getattr(self, field.name)
+            if isinstance(value, BaseModel):
+                updates[field.name] = value.with_dtype(dtype)
+        return self.clone(**updates)
+
+    def init_inputs(self, example: dict[str, Any]) -> dict[str, Any]:
+        """
+        Inputs of the model to initialize its parameters with, given an example of the dataset.
+
+        By default the example itself; override it if the model takes other inputs.
+        """
+        return example
 
     def summary(self, variables: dict[str, Any]) -> str:
         """

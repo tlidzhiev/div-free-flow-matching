@@ -1,0 +1,9 @@
+# Random transforms of the elements of each partition (grain random maps, NumPy)
+train:
+  # Random symmetry of the Kolmogorov flow
+  _target_: lab.transforms.KolmogorovSymmetry
+  k_f: 4 # forcing wavenumber of the data (scripts/generate_data.py)
+  translate: true # translations in x by whole grid cells
+  shift_reflect: true # (u, v)(x, y) -> (-u, v)(-x, y + pi / k_f) and its powers
+  rotate: true # (u, v)(x, y) -> (-u, -v)(-x, -y)
+  key: x # element entry with the field

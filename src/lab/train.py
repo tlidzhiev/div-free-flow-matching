@@ -44,7 +44,7 @@ def main(config: DictConfig) -> None:
 
         model = instantiate(config.model)
         example = datasets['train'][0]
-        variables = model.init(init_key, **example, train=False)
+        variables = model.init(init_key, **model.init_inputs(example), train=False)
         logger.info(f'Model:\n{model.summary(variables)}')
 
         lr_scheduler = instantiate(config.lr_scheduler)
@@ -54,6 +54,9 @@ def main(config: DictConfig) -> None:
 
         criterion = instantiate(config.criterion)
         logger.info(f'Criterion: {criterion}')
+
+        batch_processor = instantiate(config.path)
+        logger.info(f'Batch processor: {batch_processor}')
 
         # Without _convert_='all' the result is a DictConfig, which turns the metric classes
         # (dataclasses) into structured configs with '???' fields instead of keeping the classes
@@ -68,6 +71,7 @@ def main(config: DictConfig) -> None:
             model=model,
             variables=variables,
             criterion=criterion,
+            batch_processor=batch_processor,
             metrics=metrics,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
