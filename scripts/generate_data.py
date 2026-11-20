@@ -1,17 +1,20 @@
-"""Generate Kolmogorov-flow velocity fields for Re-conditional flow matching (NumPy/SciPy).
+"""Generate Kolmogorov-flow velocity fields for Re-conditional flow matching (JAX, float64).
 
 Each trajectory: random band-limited vorticity -> spin-up onto the attractor -> snapshots
-every `--t-snap`. Solved with `lab.dataset.solver` on a `--sim-n`^2 grid, then spectrally
-truncated to `--n`^2. Velocity is recomputed from the truncated vorticity, so the stored
+every `--t-snap`. Solved with `lab.dataset.solver` on a `--sim-n`^2 grid, then
+spectrally truncated to `--n`^2. Velocity is recomputed from the truncated vorticity, so the stored
 fields are divergence-free on the output grid (up to float64 round-off).
 
-Everything is computed and stored in float64; cast to float32 in the dataset/training code.
+Everything is computed and stored in float64 (JAX with x64 enabled); cast to float32 in the
+dataset/training code. TPUs have no float64 FFTs: run on a GPU (best with fast float64, e.g.
+A100/H100) or on the CPU (slower than on a GPU).
 
-Parallelism: trajectories are distributed over `--processes` worker processes, each runs
-`--batch` trajectories at a time with `--fft-workers` FFT threads. On CPU, many processes
-with single-threaded FFTs give the best throughput. The initial condition of trajectory `i`
-of a split depends only on (`--seed`, split, i), so the data does not depend on the
-parallelization settings.
+Parallelism: `--batch` trajectories are simulated at once on the device, as one compiled
+program, together with their diagnostics and the truncation to the output grid; the next
+batch is dispatched before the previous one is copied to the host and written, so the device
+does not wait for the host. The initial noise of trajectory `i` of a split depends only on
+(`--seed`, split, i) and is drawn with NumPy, so the data does not depend on the batch size
+or the device (up to float64 round-off, ~1e-13 relative).
 
 Condition: c = normalized log(nu) in [-1, 1] over the train range [re_min, re_max]
 (c = -1 at re_max, c = +1 at re_min).
@@ -42,20 +45,22 @@ Examples:
 import argparse
 import json
 import math
-import os
 import shutil
 import time
 from dataclasses import dataclass
 from functools import partial
-from multiprocessing.pool import Pool
 from pathlib import Path
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-import scipy.fft
 from numpy.lib.format import open_memmap
 from tqdm import tqdm
 
 from lab.dataset.solver import solver
+
+# float64 in JAX: before any JAX array is created (otherwise JAX silently computes in float32)
+jax.config.update('jax_enable_x64', True)
 
 DTYPE = np.float64
 SPLITS = ('train', 'val', 'test')
@@ -89,10 +94,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--eval-re', type=float, nargs='+', default=[100.0, 200.0, 500.0, 1000.0])
     p.add_argument('--val-traj-per-re', type=int, default=8)
     p.add_argument('--test-traj-per-re', type=int, default=16)
-    # parallelism
-    p.add_argument('--processes', type=int, default=os.cpu_count(), help='worker processes')
-    p.add_argument('--batch', type=int, default=1, help='trajectories per worker task')
-    p.add_argument('--fft-workers', type=int, default=1, help='FFT threads per process')
+    # device
+    p.add_argument(
+        '--device', default='auto', help='"auto" or a JAX platform ("gpu", "cpu"); no TPU'
+    )
+    p.add_argument(
+        '--batch',
+        type=int,
+        default=32,
+        help='trajectories simulated at once; peak device memory ~7 x batch x n-snapshots x '
+        'sim-n^2 x 8 B (~3.5 GB for the defaults)',
+    )
     # checks
     p.add_argument(
         '--max-actual-cfl', type=float, default=1.0, help='abort if exceeded (RK3 limit ~1.7)'
@@ -103,6 +115,7 @@ def parse_args() -> argparse.Namespace:
     args = p.parse_args()
 
     assert args.n <= args.sim_n and args.n % 2 == 0, '--n must be even and <= --sim-n'
+    assert args.batch >= 1, '--batch must be positive'
     assert 0 < args.re_min <= args.re_max
     for re in args.eval_re:
         assert args.re_min <= re <= args.re_max, f'eval Re={re} is outside the train range'
@@ -144,28 +157,6 @@ def normalize_log_nu(nu: np.ndarray, args: argparse.Namespace) -> np.ndarray:
 # ----------------------------------------------------------------------------- fields
 
 
-def truncate(w: np.ndarray, n: int) -> np.ndarray:
-    """Spectral truncation (..., N, N) -> (..., n, n), keeping |k_x|, |k_y| < n / 2."""
-    big = w.shape[-1]
-    if big == n:
-        return w
-    w_hat = scipy.fft.fft2(w, workers=solver.FFT_WORKERS)
-    k = np.fft.fftfreq(n, 1 / n).astype(np.int64)
-    idx = k % big
-    keep = np.abs(k) < n // 2  # drop the Nyquist modes of the target grid
-    sub = w_hat[..., idx[:, None], idx[None, :]] * (keep[:, None] & keep[None, :])
-    return scipy.fft.ifft2(sub, workers=solver.FFT_WORKERS).real * (n / big) ** 2
-
-
-def enstrophy_tail(w: np.ndarray) -> np.ndarray:
-    """Fraction of enstrophy near the dealiasing cutoff of the simulation grid, (..., N, N) -> (...).
-
-    Large values mean the simulation is under-resolved for this Re."""
-    g = solver.SpectralGrid.create(w.shape[-1], w.dtype)
-    e = np.abs(scipy.fft.rfft2(w, workers=solver.FFT_WORKERS)) ** 2
-    return (e * (np.sqrt(g.k2) > 0.8 * g.n / 3)).sum(axis=(-2, -1)) / e.sum(axis=(-2, -1))
-
-
 @dataclass(frozen=True)
 class RunConfig:
     seed: int
@@ -180,42 +171,59 @@ class RunConfig:
     n_snapshots: int
 
 
-def run_trajectories(
-    cfg: RunConfig, task: tuple[np.ndarray, np.ndarray]
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Trajectories `ids` with viscosities `nu` -> uv (b, T, n, n, 2), speed, tail, rel_div (b,)."""
-    ids, nu = task
-    w0 = np.stack(
+@jax.jit(static_argnames=('n',))
+def analyze(traj: jax.Array, n: int) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Vorticity (b, T, N, N) -> uv (b, T, n, n, 2), speed, tail, rel_div (b,).
+
+    Velocity is recomputed from the vorticity truncated to the output grid, so the stored
+    fields are divergence-free on it; speed (for the CFL check) and the enstrophy tail are
+    taken on the simulation grid."""
+    speed = jnp.sqrt((solver.vorticity_to_velocity(traj) ** 2).sum(axis=-3)).max(axis=(1, 2, 3))
+    tail = solver.enstrophy_tail(traj).max(axis=1)
+
+    w = solver.truncate(traj, n)  # (b, T, n, n)
+    uv = solver.vorticity_to_velocity(w)  # (b, T, 2, n, n)
+    div = solver.divergence(uv)
+    rel_div = jnp.sqrt((div**2).mean(axis=(1, 2, 3)) / (w**2).mean(axis=(1, 2, 3)))
+    return jnp.moveaxis(uv, 2, -1), speed, tail, rel_div
+
+
+def launch_trajectories(
+    cfg: RunConfig,
+    ids: np.ndarray,
+    nu: np.ndarray,
+    device: jax.Device,
+) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    """Dispatch the trajectories `ids` with viscosities `nu` on the device: the simulation and
+    the diagnostics (see 'analyze'), without waiting for them.
+
+    The initial noise of trajectory `i` comes from a NumPy generator seeded with
+    (seed, split, i), so it does not depend on the batch or the device."""
+    noise = np.stack(
         [
-            solver.random_vorticity(
-                np.random.default_rng([cfg.seed, cfg.split_index, i]), cfg.sim_n
+            np.random.default_rng([cfg.seed, cfg.split_index, i]).standard_normal(
+                (cfg.sim_n, cfg.sim_n)
             )
             for i in ids
         ]
     ).astype(DTYPE)
+    noise, nu = jax.device_put((noise, nu.astype(DTYPE)), device)
     run = partial(solver.simulate, nu=nu, dt=cfg.dt, alpha=cfg.alpha, k_f=cfg.k_f)
-    w0 = run(w0, n_snapshots=1, steps_per_snapshot=cfg.spinup_steps)[:, -1]
-    traj = run(w0, n_snapshots=cfg.n_snapshots, steps_per_snapshot=cfg.steps_per_snapshot)
-
-    speed = np.sqrt((solver.vorticity_to_velocity(traj) ** 2).sum(axis=-3)).max(axis=(1, 2, 3))
-    tail = enstrophy_tail(traj).max(axis=1)
-
-    w = truncate(traj, cfg.n)  # (b, T, n, n)
-    uv = solver.vorticity_to_velocity(w)  # (b, T, 2, n, n)
-    div = solver.divergence(uv)
-    rel_div = np.sqrt((div**2).mean(axis=(1, 2, 3)) / (w**2).mean(axis=(1, 2, 3)))
-    return np.moveaxis(uv, 2, -1), speed, tail, rel_div
-
-
-def _init_worker(fft_workers: int) -> None:
-    solver.FFT_WORKERS = fft_workers
+    w0 = run(solver.random_vorticity(noise), n_snapshots=1, steps_per_snapshot=cfg.spinup_steps)
+    traj = run(w0[:, -1], n_snapshots=cfg.n_snapshots, steps_per_snapshot=cfg.steps_per_snapshot)
+    return analyze(traj, cfg.n)
 
 
 # ----------------------------------------------------------------------------- main
 
 
 def generate_split(
-    split: str, args: argparse.Namespace, pool: Pool, dt: float, steps: int, spinup_steps: int
+    split: str,
+    args: argparse.Namespace,
+    device: jax.Device,
+    dt: float,
+    steps: int,
+    spinup_steps: int,
 ) -> dict:
     re = sample_re(split, args)
     nu = 1 / re
@@ -235,14 +243,23 @@ def generate_split(
         spinup_steps=spinup_steps,
         n_snapshots=t,
     )
-    starts = range(0, m, args.batch)
-    tasks = [(np.arange(s, min(s + args.batch, m)), nu[s : s + args.batch]) for s in starts]
+    starts = list(range(0, m, args.batch))
 
     fields = open_memmap(out / 'fields.npy', mode='w+', dtype=DTYPE, shape=(m * t, n, n, 2))
     speed, tail, rel_div = np.zeros(m), np.zeros(m), np.zeros(m)
-    results = pool.imap(partial(run_trajectories, cfg), tasks)
+
+    def launch(start: int) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        stop = min(start + args.batch, m)
+        return launch_trajectories(cfg, np.arange(start, stop), nu[start:stop], device)
+
     with tqdm(total=m, desc=split) as bar:
-        for start, (uv, s, tl, rd) in zip(starts, results):
+        pending = launch(starts[0])
+        for index, start in enumerate(starts):
+            current = pending
+            # The next batch runs on the device while the host writes the current one
+            if index + 1 < len(starts):
+                pending = launch(starts[index + 1])
+            uv, s, tl, rd = (np.asarray(x) for x in jax.device_get(current))
             stop = start + len(uv)
             assert uv.dtype == DTYPE, f'expected {DTYPE.__name__}, got {uv.dtype}'
             if not np.isfinite(uv).all():
@@ -292,25 +309,33 @@ def main() -> None:
         shutil.rmtree(args.out)
     args.out.mkdir(parents=True)
 
+    device = jax.devices()[0] if args.device == 'auto' else jax.devices(args.device)[0]
+    if device.platform == 'tpu':
+        raise RuntimeError('TPUs have no float64 FFTs: run on a GPU or the CPU (--device)')
+    if device.platform == 'cpu' and args.device == 'auto':
+        print(
+            'WARNING: no GPU found, running on the CPU (slow). For a GPU install JAX with CUDA, '
+            "e.g. uv pip install 'jax[cuda12]==<the jax version of pyproject.toml>'"
+        )
+
     dt, steps, spinup_steps = time_grid(args)
     print(
-        f'processes={args.processes}x{args.fft_workers} threads  batch={args.batch}  '
+        f'device={device}  batch={args.batch}  '
         f'dtype={DTYPE.__name__}  sim {args.sim_n}^2 -> {args.n}^2  '
         f'Re in [{args.re_min:g}, {args.re_max:g}]  dt={dt:.3e}  '
         f'steps/snapshot={steps}  spin-up steps={spinup_steps}'
     )
 
     stats = {}
-    with Pool(args.processes, initializer=_init_worker, initargs=(args.fft_workers,)) as pool:
-        for split in args.splits:
-            t0 = time.perf_counter()
-            stats[split] = generate_split(split, args, pool, dt, steps, spinup_steps)
-            stats[split]['seconds'] = round(time.perf_counter() - t0, 1)
-            print(f'{split}: {stats[split]}')
+    for split in args.splits:
+        t0 = time.perf_counter()
+        stats[split] = generate_split(split, args, device, dt, steps, spinup_steps)
+        stats[split]['seconds'] = round(time.perf_counter() - t0, 1)
+        print(f'{split}: {stats[split]}')
 
     meta = {
         'args': {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
-        'solver': 'numpy/scipy',
+        'solver': f'jax ({device.platform}, {DTYPE.__name__})',
         'equation': 'd_t w + u.grad w = nu lap w - alpha w - k_f cos(k_f y), domain [0, 2pi)^2',
         'layout': 'fields[i, x, y, (u, v)], indexing ij, x = 2 pi i / n',
         'dt': dt,

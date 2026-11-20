@@ -563,7 +563,6 @@ dependencies = [
     { name = "numpy" },
     { name = "optax" },
     { name = "orbax-checkpoint" },
-    { name = "scipy" },
     { name = "soap-jax" },
     { name = "tqdm" },
 ]
@@ -590,7 +589,6 @@ requires-dist = [
     { name = "numpy", specifier = "==2.5.4" },
     { name = "optax", specifier = "==0.2.8" },
     { name = "orbax-checkpoint", specifier = "==0.12.9" },
-    { name = "scipy", specifier = "==1.18.1" },
     { name = "soap-jax", git = "https://github.com/haydn-jones/SOAP_JAX" },
     { name = "tqdm", specifier = "==4.70.1" },
 ]

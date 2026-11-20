@@ -18,7 +18,6 @@ dependencies = [
     "numpy==2.5.4",
     "optax==0.2.8",
     "orbax-checkpoint==0.12.9",
-    "scipy==1.18.1",
     "soap-jax==0.2.2",
     "tqdm==4.70.1",
 ]
