@@ -3,4 +3,4 @@ init_value: 0.0 # lr at step 0 of the warmup
 peak_value: 2.0e-4
 warmup_steps: 1000 # 0 = no warmup
 decay_steps: ${trainer.total_steps} # includes the warmup
-end_value: 0.0
+end_value: 2.0e-5 # 10% of peak_value: the EMA does the final averaging

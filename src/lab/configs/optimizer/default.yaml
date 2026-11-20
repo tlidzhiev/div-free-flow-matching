@@ -1,2 +1,2 @@
 _target_: optax.adamw
-weight_decay: 0.0
+weight_decay: 0.01 # 256 independent trajectories in train: mild regularization

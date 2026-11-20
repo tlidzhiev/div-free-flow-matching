@@ -58,6 +58,6 @@ trainer:
   eval_seed: 0 # noise and times of the evaluation and the logged samples (the same for all runs)
   override: false # overwrite an existing run dir with the same writer.run_name
   ema: # null to disable
-    decay: 0.999
+    decay: 0.9995 # averaging horizon ~1 / (1 - decay) = 2000 steps
     update_every: 1 # optimizer steps between EMA updates
-    warmup_steps: 0 # steps with linearly increasing decay (0 = disabled)
+    warmup_steps: 1000 # steps with linearly increasing decay (0 = disabled); = lr warmup
